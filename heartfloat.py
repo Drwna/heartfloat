@@ -15,6 +15,7 @@ status_var = None         # 状态栏文本变量
 loop = None               # asyncio 事件循环
 client = None             # BleakClient 实例
 is_connected = False      # 连接状态标志
+is_connecting = False     # 正在连接状态标志
 
 # ================== 心率解析函数 ==================
 def parse_heart_rate(data):
@@ -63,24 +64,46 @@ async def scan_and_connect():
 
     update_status(f"正在连接 {target_device.name} ({target_device.address})...")
 
+    def on_disconnected(_):
+        """设备断开时回调（由 Bleak 在线程中触发）"""
+        global is_connected
+        is_connected = False
+        if label:
+            label.after(0, lambda: label.config(text="--"))
+        update_status("设备已断开，点击「连接设备」重试")
+
     try:
-        async with BleakClient(target_device.address, timeout=10.0) as c:
-            client = c
-            is_connected = True
-            update_status(f"已连接 {target_device.name}，等待心率数据...")
+        client = BleakClient(
+            target_device.address,
+            timeout=10.0,
+            disconnected_callback=on_disconnected,
+        )
+        await client.connect()
+        is_connected = True
+        update_status(f"已连接 {target_device.name}，等待心率数据...")
 
-            # 启动心率通知
-            await client.start_notify(HEART_RATE_MEASUREMENT_UUID, notification_handler)
+        # 启动心率通知
+        await client.start_notify(HEART_RATE_MEASUREMENT_UUID, notification_handler)
 
-            # 保持连接直到用户断开或异常
-            while is_connected:
-                await asyncio.sleep(1)
+        # 保持连接直到用户断开或设备断连
+        while is_connected and client.is_connected:
+            await asyncio.sleep(1)
 
     except BleakError as e:
         update_status(f"连接失败: {e}")
     except Exception as e:
         update_status(f"未知错误: {e}")
     finally:
+        if client:
+            try:
+                await client.stop_notify(HEART_RATE_MEASUREMENT_UUID)
+            except Exception:
+                pass
+            try:
+                if client.is_connected:
+                    await client.disconnect()
+            except Exception:
+                pass
         is_connected = False
         client = None
         if label:
@@ -96,24 +119,35 @@ def update_status(text):
 
 def start_connection_thread():
     """在新线程中启动 asyncio 事件循环"""
+    global loop, is_connecting
     if is_connected:
         messagebox.showinfo("提示", "设备已连接")
+        return
+    if is_connecting:
+        messagebox.showinfo("提示", "正在连接中，请稍候")
         return
 
     # 创建新的事件循环（每个线程需要独立的 loop）
     new_loop = asyncio.new_event_loop()
+    loop = new_loop
+    is_connecting = True
     t = threading.Thread(target=run_async_loop, args=(new_loop,), daemon=True)
     t.start()
 
 def run_async_loop(loop):
     """在新线程中运行 asyncio 事件循环"""
+    global is_connecting
     asyncio.set_event_loop(loop)
-    loop.run_until_complete(scan_and_connect())
+    try:
+        loop.run_until_complete(scan_and_connect())
+    finally:
+        is_connecting = False
+        loop.close()
 
 def disconnect_device():
     """手动断开连接"""
     global is_connected
-    if client and is_connected:
+    if client and is_connected and loop and not loop.is_closed():
         # 在事件循环中执行断开操作
         asyncio.run_coroutine_threadsafe(disconnect_coro(), loop)
         is_connected = False
@@ -124,7 +158,7 @@ async def disconnect_coro():
     try:
         await client.stop_notify(HEART_RATE_MEASUREMENT_UUID)
         await client.disconnect()
-    except:
+    except Exception:
         pass
 
 # ================== 创建悬浮窗 UI ==================
