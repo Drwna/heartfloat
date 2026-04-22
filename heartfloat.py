@@ -45,6 +45,7 @@ async def scan_and_connect():
 
     # 扫描设备，超时 5 秒
     devices = await BleakScanner.discover(timeout=5.0, return_adv=True)
+    print(f"扫描完成，找到 {len(devices)} 个设备")
 
     # 筛选可能的心率设备（可根据名称关键字调整）
     target_device = None
@@ -58,11 +59,15 @@ async def scan_and_connect():
         # 若没找到特征名，选择第一个蓝牙设备（不一定正确）
         target_device = list(devices.values())[0][0]
 
+    if target_device.name is None:
+        update_status("请重试")
+        return
+
     if target_device is None:
         update_status("未找到任何蓝牙设备，请确保手环已开启心率广播")
         return
 
-    update_status(f"正在连接 {target_device.name} ({target_device.address})...")
+    update_status(f"正在连接 {target_device.name}...")
 
     def on_disconnected(_):
         """设备断开时回调（由 Bleak 在线程中触发）"""
@@ -80,7 +85,7 @@ async def scan_and_connect():
         )
         await client.connect()
         is_connected = True
-        update_status(f"已连接 {target_device.name}，等待心率数据...")
+        update_status(f"已连接 {target_device.name}")
 
         # 启动心率通知
         await client.start_notify(HEART_RATE_MEASUREMENT_UUID, notification_handler)
