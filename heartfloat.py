@@ -1,6 +1,7 @@
 import asyncio
 import threading
 import tkinter as tk
+from pathlib import Path
 from tkinter import messagebox
 from bleak import BleakScanner, BleakClient, BleakError
 
@@ -197,6 +198,12 @@ def create_window():
     global root, label, icon_label, bpm_label, status_var, status_view_var, is_hovering
     root = tk.Tk()
     root.title("heartfloat")
+    icon_path = Path(__file__).with_name("heartfloat.ico")
+    if icon_path.exists():
+        try:
+            root.iconbitmap(default=str(icon_path))
+        except tk.TclError:
+            pass
     root.geometry("200x80+100+100")  # 宽x高+X+Y
     root.overrideredirect(True)       # 去掉标题栏，实现无边框
     root.attributes("-topmost", True) # 窗口置顶
