@@ -11,11 +11,18 @@ HEART_RATE_MEASUREMENT_UUID = "00002a37-0000-1000-8000-00805f9b34fb"
 # ================== 全局变量 ==================
 root = None               # tkinter 根窗口
 label = None              # 显示心率的 Label
+icon_label = None         # 心率图标 Label
+bpm_label = None          # BPM 文本 Label
 status_var = None         # 状态栏文本变量
+status_view_var = None    # 状态栏显示文本变量（用于悬停显示控制）
 loop = None               # asyncio 事件循环
 client = None             # BleakClient 实例
 is_connected = False      # 连接状态标志
 is_connecting = False     # 正在连接状态标志
+is_hovering = False       # 鼠标是否悬停在窗口上
+manual_disconnect_requested = False  # 是否由用户手动触发断开
+AUTO_RECONNECT_DELAY_MS = 3000       # 意外断开后的自动重连延时
+TRANSPARENT_COLOR = "#fefefe"       # Windows 透明色键（白色背景下可避免黑边）
 
 # ================== 心率解析函数 ==================
 def parse_heart_rate(data):
@@ -32,16 +39,22 @@ def parse_heart_rate(data):
 def notification_handler(sender, data):
     """接收到心率数据时的回调"""
     hr = parse_heart_rate(data)
+
+    def update_hr_ui():
+        if label:
+            label.config(text=str(hr))
+
     # 更新 UI（需通过 tkinter 线程安全方式）
-    if label:
-        label.after(0, lambda: label.config(text=str(hr)))
-    print(f"❤️ 心率: {hr} BPM")
+    if root and root.winfo_exists():
+        root.after(0, update_hr_ui)
 
 # ================== 蓝牙连接任务 ==================
 async def scan_and_connect():
     """扫描并连接心率设备"""
-    global client, is_connected
-    update_status("正在扫描蓝牙设备 (5秒)...")
+    global client, is_connected, manual_disconnect_requested
+    manual_disconnect_requested = False
+    was_connected_once = False
+    update_status("正在扫描蓝牙设备(5秒)")
 
     # 扫描设备，超时 5 秒
     devices = await BleakScanner.discover(timeout=5.0, return_adv=True)
@@ -59,12 +72,12 @@ async def scan_and_connect():
         # 若没找到特征名，选择第一个蓝牙设备（不一定正确）
         target_device = list(devices.values())[0][0]
 
-    if target_device.name is None:
-        update_status("请重试")
-        return
-
     if target_device is None:
         update_status("未找到任何蓝牙设备，请确保手环已开启心率广播")
+        return
+
+    if target_device.name is None:
+        update_status("请重试")
         return
 
     update_status(f"正在连接 {target_device.name}...")
@@ -75,7 +88,10 @@ async def scan_and_connect():
         is_connected = False
         if label:
             label.after(0, lambda: label.config(text="--"))
-        update_status("设备已断开，点击「连接设备」重试")
+        if manual_disconnect_requested:
+            update_status("设备已断开")
+        else:
+            update_status("意外断开，准备自动重连")
 
     try:
         client = BleakClient(
@@ -85,6 +101,7 @@ async def scan_and_connect():
         )
         await client.connect()
         is_connected = True
+        was_connected_once = True
         update_status(f"已连接 {target_device.name}")
 
         # 启动心率通知
@@ -113,13 +130,21 @@ async def scan_and_connect():
         client = None
         if label:
             label.after(0, lambda: label.config(text="--"))
-        update_status("连接已断开，点击「连接设备」重试")
+        if (was_connected_once and not manual_disconnect_requested and root and root.winfo_exists()):
+            update_status(f"{AUTO_RECONNECT_DELAY_MS // 1000} 秒后自动重连...")
+            root.after(AUTO_RECONNECT_DELAY_MS, start_connection_thread)
+        else:
+            update_status("已断开，点击「连接设备」重试")
 
 # ================== UI 更新辅助函数 ==================
 def update_status(text):
     """线程安全地更新状态栏"""
-    if status_var:
-        root.after(0, lambda: status_var.set(text))
+    if status_var and root and root.winfo_exists():
+        def update_status_text():
+            status_var.set(text)
+            if status_view_var:
+                status_view_var.set(text if is_hovering else "")
+        root.after(0, update_status_text)
     print(f"[状态] {text}")
 
 def start_connection_thread():
@@ -151,8 +176,9 @@ def run_async_loop(loop):
 
 def disconnect_device():
     """手动断开连接"""
-    global is_connected
+    global is_connected, manual_disconnect_requested
     if client and is_connected and loop and not loop.is_closed():
+        manual_disconnect_requested = True
         # 在事件循环中执行断开操作
         asyncio.run_coroutine_threadsafe(disconnect_coro(), loop)
         is_connected = False
@@ -168,13 +194,18 @@ async def disconnect_coro():
 
 # ================== 创建悬浮窗 UI ==================
 def create_window():
-    global root, label, status_var
+    global root, label, icon_label, bpm_label, status_var, status_view_var, is_hovering
     root = tk.Tk()
-    root.title("心率悬浮窗")
-    root.geometry("200x120+100+100")  # 宽x高+X+Y
+    root.title("heartfloat")
+    root.geometry("200x80+100+100")  # 宽x高+X+Y
     root.overrideredirect(True)       # 去掉标题栏，实现无边框
     root.attributes("-topmost", True) # 窗口置顶
-    root.configure(bg="black")
+    normal_bg = "#171a24"
+    status_bg = "#121520"
+    root.configure(bg=normal_bg)
+
+    card = tk.Frame(root, bg=normal_bg, highlightthickness=0, bd=0)
+    card.pack(expand=True, fill="both")
 
     # 允许窗口拖动
     def start_move(event):
@@ -188,18 +219,71 @@ def create_window():
         root.geometry(f"+{x}+{y}")
     root.bind("<Button-1>", start_move)
     root.bind("<B1-Motion>", do_move)
+    card.bind("<Button-1>", start_move)
+    card.bind("<B1-Motion>", do_move)
+
+    center_row = tk.Frame(card, bg=normal_bg)
+    center_row.pack(expand=True)
+
+    icon_box = tk.Frame(center_row, width=30, height=30, bg=normal_bg)
+    icon_box.pack(side="left")
+    icon_box.pack_propagate(False)
+
+    icon_label = tk.Label(icon_box, text="❤", font=("Segoe UI Emoji", 16, "bold"), fg="#ff2d55", bg=normal_bg)
+    icon_label.place(relx=0.5, rely=0.5, anchor="center")
 
     # 大号心率数字
-    label = tk.Label(root, text="--", font=("Arial", 48, "bold"),
-                     fg="#00FF00", bg="black")
-    label.pack(expand=True, fill="both")
+    label = tk.Label(center_row, text="--", font=("Segoe UI", 28, "bold"),
+                     fg="#49f08f", bg=normal_bg)
+    label.pack(side="left", padx=(6, 0))
 
     # 状态栏（显示连接状态）
     status_var = tk.StringVar()
     status_var.set("就绪")
-    status_bar = tk.Label(root, textvariable=status_var, font=("Arial", 9),
-                          fg="gray", bg="black")
-    status_bar.pack(side="bottom", fill="x")
+    status_view_var = tk.StringVar()
+    status_view_var.set("就绪")
+    status_container = tk.Frame(card, bg=status_bg, height=20)
+    status_container.pack(side="bottom", fill="x", padx=6, pady=(0, 6))
+    status_container.pack_propagate(False)
+
+    status_bar = tk.Label(status_container, textvariable=status_view_var, font=("Consolas", 9, "bold"),
+                          fg="#c8d1dc", bg=status_bg, anchor="w")
+    status_bar.pack(fill="both", padx=5)
+
+    def set_hover_state(hovered):
+        global is_hovering
+        is_hovering = hovered
+        if hovered:
+            root.wm_attributes("-transparentcolor", "")
+            root.configure(bg=normal_bg)
+            card.configure(bg=normal_bg)
+            center_row.configure(bg=normal_bg)
+            icon_box.configure(bg=normal_bg)
+            icon_label.configure(bg=normal_bg)
+            label.configure(bg=normal_bg)
+            status_container.configure(bg=status_bg)
+            status_bar.configure(bg=status_bg, fg="#c8d1dc")
+            status_view_var.set(status_var.get())
+        else:
+            root.configure(bg=TRANSPARENT_COLOR)
+            card.configure(bg=TRANSPARENT_COLOR)
+            center_row.configure(bg=TRANSPARENT_COLOR)
+            icon_box.configure(bg=TRANSPARENT_COLOR)
+            icon_label.configure(bg=TRANSPARENT_COLOR)
+            label.configure(bg=TRANSPARENT_COLOR)
+            status_container.configure(bg=TRANSPARENT_COLOR)
+            status_bar.configure(bg=TRANSPARENT_COLOR, fg=TRANSPARENT_COLOR)
+            status_view_var.set("")
+            root.wm_attributes("-transparentcolor", TRANSPARENT_COLOR)
+
+    def on_mouse_enter(_event):
+        set_hover_state(True)
+
+    def on_mouse_leave(_event):
+        set_hover_state(False)
+
+    root.bind("<Enter>", on_mouse_enter)
+    root.bind("<Leave>", on_mouse_leave)
 
     # 右键菜单
     menu = tk.Menu(root, tearoff=0)
@@ -214,8 +298,11 @@ def create_window():
     # 双击切换颜色（可选小功能）
     def toggle_color(event):
         current = label.cget("fg")
-        label.config(fg="#FF0000" if current == "#00FF00" else "#00FF00")
+        label.config(fg="#ff6b7d" if current == "#49f08f" else "#49f08f")
     label.bind("<Double-Button-1>", toggle_color)
+
+    # 启动时默认隐藏背景与状态栏，鼠标移入再显示
+    set_hover_state(False)
 
     # 启动 tkinter 主循环
     root.mainloop()
