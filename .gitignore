@@ -1,0 +1,67 @@
+# .gitignore for HeartFloat (心率悬浮窗)
+
+# --- Python 编译与缓存 ---
+__pycache__/
+*.py[cod]
+*.pyc
+*.pyo
+*.pyd
+*.so
+
+# --- 虚拟环境 (Virtual Environment) ---
+venv/
+env/
+.env/
+.venv/
+ENV/
+env.bak/
+venv.bak/
+
+# --- 打包与分发 (PyInstaller) ---
+build/
+dist/
+*.spec
+*.exe
+*.msi
+
+# --- IDE 与编辑器 (可根据实际使用情况删除不需要的) ---
+# Visual Studio Code
+.vscode/
+*.code-workspace
+
+# PyCharm
+.idea/
+*.iml
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+
+# --- 操作系统杂项 ---
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Linux
+*~
+.directory
+
+# --- 日志与临时文件 ---
+*.log
+*.tmp
+*.temp
+
+# --- 配置文件（可能包含敏感信息，如有需要请忽略） ---
+.env
+config.ini
+secrets.json
